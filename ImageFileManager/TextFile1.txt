@@ -1,0 +1,367 @@
+﻿using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Windows;
+using File = System.IO.File;
+using Path = System.IO.Path;
+using System.ComponentModel;
+using System.Windows.Threading;
+using System;
+
+namespace ImageFileManager
+{
+    /// <summary>
+    /// Interaction logic for MainWindow.xaml
+    /// </summary>
+    public partial class MainWindow : Window, INotifyPropertyChanged
+    {
+        #region Implement INotifyPropertyChanged
+        public event PropertyChangedEventHandler PropertyChanged;
+        protected void OnPropertyChanged(string propertyName)
+        {
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+        }
+        #endregion  Implement INotifyPropertyChanged
+
+        #region Fields
+        private string sourceFolder;
+        private string sourceRoot;
+        private string workingFolder;
+        private string renameFolder;
+        private string dedupeFolder;
+        private string uniqueFolder;
+        private string rebuildFolder;        
+        private bool checkDimensions = true;
+        private int shortUpdateInterval = 100;
+        private int tolerance = 96;
+        private int hashDimension = 16;
+        private int duplicateGroupsCount = 0;
+        private Stopwatch stopWatch = new Stopwatch();
+        private List<FileObject> fileObjects = new List<FileObject>();
+        private string searchPattern;
+        private string imagePattern = "jpg, jpeg, bmp, png, tiff, raw";
+        private string gifPattern = "gif, webp";
+        private string docPattern = "doc, docx, txt, pdf";
+        private string moviePattern = "mpeg, mp4, mpg, ts, avi";
+        #endregion
+
+        #region Properties
+        public string SourceFolder { get => sourceFolder; set { sourceFolder = value; OnPropertyChanged("SourceFolder"); } }
+        public string SourceRoot { get => sourceRoot; set { sourceRoot = value; OnPropertyChanged("SourceFolder"); } }
+        public string WorkingFolder { get => workingFolder; set { workingFolder = value; OnPropertyChanged("WorkingFolder"); } }
+        public string RenameFolder { get => renameFolder; set { renameFolder = value; OnPropertyChanged("RenameFolder"); } }
+        public string DedupeFolder { get => dedupeFolder; set { dedupeFolder = value; OnPropertyChanged("DedupeFolder"); } }
+        public string UniqueFolder { get => uniqueFolder; set { uniqueFolder = value; OnPropertyChanged("UniqueFolder"); } }
+        public string RebuildFolder { get => rebuildFolder; set { rebuildFolder = value; OnPropertyChanged("RebuildFolder"); } }
+        public bool CheckDimensions { get => checkDimensions; set { checkDimensions = value; OnPropertyChanged("CheckDimensions"); } }
+        public int Tolerance { get => tolerance; set { tolerance = value; OnPropertyChanged("Tolerance"); } }
+        public int HashDimension { get => hashDimension; set { hashDimension = value; OnPropertyChanged("HashDimension"); } }
+        public int DuplicateGroupsCount { get => duplicateGroupsCount; set { duplicateGroupsCount = value; OnPropertyChanged("DuplicateGroupsCount"); } }        
+        public Stopwatch StopWatch { get => stopWatch; set { stopWatch = value; OnPropertyChanged("StopWatch"); } }
+        public List<FileObject> FileObjects { get => fileObjects; set { fileObjects = value; OnPropertyChanged("FileObjects"); } }
+        public string SearchPattern { get => searchPattern; set { searchPattern = value; OnPropertyChanged("SearchPattern"); } }
+        public string InfoText { get => _asyncDialogFeedback; set { _asyncDialogFeedback = value; OnPropertyChanged("InfoText"); } }
+        #endregion INotify Properties
+
+        #region Async Fields
+        private string _asyncDialogFeedback;
+        private DispatcherTimer _asyncElapsedTimer = new DispatcherTimer(DispatcherPriority.Send);
+        private DateTime _startTime;
+        #endregion
+
+        public MainWindow()
+        {
+            InitializeComponent();
+
+            ////private List<string> SearchPattern = new List<string> { "*.jpg", "*.gif", "*.jpeg", "*.bmp" };
+            //private List<string> SearchPattern = new List<string> { "*.gif" };
+            DataContext = this;
+
+            SourceFolder = @"C:\SOURCE";
+            SourceRoot = SourceFolder;
+            WorkingFolder = @"C:\____NSFW GIFS WORKING";
+            SearchPattern = "*.gif";
+            RenameFolder = $@"{workingFolder}\RENAME";
+            DedupeFolder = $@"{workingFolder}\DUPE";
+            UniqueFolder = $@"{workingFolder}\UNIQUE";
+            RebuildFolder = $@"{workingFolder}\REBUILD";
+            SearchPattern = "*.gif";
+            InfoText = "Application Started";
+        }
+
+        private void InitDirectories()
+        {
+            Directory.CreateDirectory(WorkingFolder);
+            Directory.CreateDirectory(RenameFolder);
+            Directory.CreateDirectory(DedupeFolder);
+            Directory.CreateDirectory(UniqueFolder);
+            Directory.CreateDirectory(RebuildFolder);
+        }
+
+        private void InitializeElapsedTimer()
+        {
+            _asyncElapsedTimer = new DispatcherTimer();
+            _asyncElapsedTimer.Interval = new TimeSpan(0, 0, 0, 0, 250);
+            _asyncElapsedTimer.Tick += _asyncElapsedTimer_Tick;
+        }
+
+        private void GetFileObjects(string pattern, bool checkDimensions)
+        {
+            //var fileCount = 0;
+            var files = Directory.GetFiles(SourceFolder, pattern, SearchOption.AllDirectories).ToList();
+            var allFilesCount = files.Count;
+            //Parallel.ForEach(files, file =>
+            //{
+            //    if (fileCount % shortUpdateInterval == 0) 
+            //    { 
+            //        var threadText = $"Step 1 of 4 {fileCount}/{allFilesCount} getting files"; 
+            //        Debug.WriteLine(threadText); 
+            //    }
+            //    var fileobj = new FileObject(file, SourceFolder, WorkingFolder, RenameFolder, UniqueFolder, DedupeFolder, RebuildFolder, checkDimensions);
+            //    lock (fileObjects)
+            //    {
+            //        fileObjects.Add(fileobj);
+            //    }
+            //    Interlocked.Increment(ref fileCount);
+            //});
+
+            for(int i = 0; i < allFilesCount; i++)
+            {
+                if(App.Current == null) { break; }
+                //Required for UI to update while task is running
+                App.Current.Dispatcher.Invoke((Action)delegate
+                {
+                    _asyncDialogFeedback = $"{_asyncDialogFeedback}Step 1 of 4 {i+1}/{allFilesCount} getting files{Environment.NewLine}";
+                    Debug.WriteLine(_asyncDialogFeedback);
+                    Task.Delay(200);
+                });
+                fileObjects.Add(new FileObject(files[i], SourceFolder, WorkingFolder, RenameFolder, UniqueFolder, DedupeFolder, RebuildFolder, checkDimensions));
+            }
+        }
+
+        private void RenameFileObjects()
+        {
+            var fileCount = 0;
+            var allFilesCount = fileObjects.Count();
+            var folderGroups = fileObjects.GroupBy(x => x.SubFolder).ToList();
+            Parallel.ForEach(folderGroups, folderGroup =>
+            {
+                foreach (var file in folderGroup)
+                {
+                    if (fileCount % shortUpdateInterval == 0) { Debug.WriteLine($"Step 2 of 4 {fileCount}/{allFilesCount} renaming files"); }
+                    Interlocked.Increment(ref fileCount);
+                    file.CreateCompareFile();
+                }
+            });
+        }
+
+        private void CompareByImageProperties()
+        {
+            var fileCount = 0;
+            var sizeGroups = fileObjects.GroupBy(x => x.FileSize);
+            Parallel.ForEach(sizeGroups, sizeGroup =>
+            {
+                var widthGroups = sizeGroup.GroupBy(x => x.Width);
+                foreach (var widthGroup in widthGroups)
+                {
+                    var heightGroups = widthGroup.GroupBy(x => x.Height);
+                    foreach (var heightGroup in heightGroups)
+                    {
+                        var dupFileName = "";
+                        for(int i = 0; i < heightGroup.Count(); i++)
+                        {
+                            if (fileCount % 200 == 0) { Debug.WriteLine($"Step 3 of 4 {fileCount}/{fileObjects.Count()} comparing files by image properties"); }
+                            if (i == 0)
+                            {
+                                heightGroup.ElementAt(i).CreateUniqueFile();
+                            }
+                            dupFileName = heightGroup.ElementAt(i).CreateDuplicateFile();
+                            Interlocked.Increment(ref fileCount);
+                        }
+                    }
+                }
+            });
+        }
+
+        private void RebuildFileObjects()
+        {
+            var allFilesCount = fileObjects.Count();
+            for(int i = 0; i< fileObjects.Count();i++)
+            {
+                if (i % shortUpdateInterval == 0) { Debug.WriteLine($"Step 4 of 4 {i}/{allFilesCount} rebuilding file name"); }
+                fileObjects[i].RebuildFileByFolder();
+            }
+        }
+
+        private void CompareByHash()
+        {
+            var comparator = new ImgComparator(hashDimension);
+            comparator.AddPicFolderByPath(RenameFolder);
+            var _comparationResult = comparator.FindDuplicatesWithTollerance(tolerance);
+            duplicateGroupsCount = _comparationResult.Count();
+            for (int i = 0; i < _comparationResult.Count(); i++)
+            {
+                if (i % 200 == 0)
+                {
+                    Debug.WriteLine($"Step 4 of 4 {i}/{_comparationResult.Count()} Copy unique and dupe files");
+                }
+
+                //move unique
+                var uniqueFile = $"{UniqueFolder}{Path.DirectorySeparatorChar}{_comparationResult[i][0].FileName}";
+                var fileobj = fileObjects.Where(x => x.RenameFile == _comparationResult[i][0].FilePath).First();
+                fileobj.CreateUniqueFile();
+
+                if (_comparationResult[i].Count() > 1)
+                {
+                    var dupeFolder = $"{DedupeFolder}{Path.DirectorySeparatorChar}Group {i.ToString("00000")}";
+                    Directory.CreateDirectory(dupeFolder);
+                    foreach (var result in _comparationResult[i])
+                    {
+                        var fi = new FileInfo(result.FilePath);
+                        var count = Directory.GetFiles(dupeFolder, "*", SearchOption.AllDirectories).Count();
+                        var dupFile = $"{dupeFolder}{Path.DirectorySeparatorChar}{Path.GetFileNameWithoutExtension(result.FileName)} {count.ToString("00000")}{Path.GetExtension(result.FileName)}";
+                        //var oname = fileObjects.Where(x => x.RenameFile == result.FilePath).First().OriginalFile;
+
+                        dupFile = $"{dupeFolder}{Path.DirectorySeparatorChar}{fileObjects.Where(x => x.RenameFile == result.FilePath).First().OriginalFile.Replace(SourceFolder, "").Replace(Path.DirectorySeparatorChar, ' ').Trim()}";
+
+
+                        //oname = oname.Replace(SourceFolder, "");
+                        //var dupFile = $"{dupeFolder}{Path.DirectorySeparatorChar}{oname}";
+                        File.Copy(result.FilePath, dupFile);
+                    }
+                    var filecount = Directory.GetFiles(dupeFolder, "*", SearchOption.AllDirectories).Count();
+                    Directory.Move(dupeFolder, $"{dupeFolder} [{filecount.ToString("000")} Files]");
+                }
+            }
+        }
+
+        private void JustRename()
+        {
+            var files = Directory.GetFiles(SourceFolder, "*.*", SearchOption.AllDirectories);
+            for (int i = 0; i < files.Length; i++)
+            {
+                var subpath = "";
+                var subpathfilestring = "";
+                var segments = files[i].Replace(SourceFolder, "").Split(Path.DirectorySeparatorChar);
+                for (int x = 0; x < segments.Count() - 1; x++)
+                {
+                    if (string.IsNullOrWhiteSpace(segments[x])) { continue; }
+                    subpath = $"{subpath}{Path.DirectorySeparatorChar}{segments[x]}";
+                    subpathfilestring = $"{subpathfilestring} {segments[x]}";
+                }
+                subpathfilestring = subpathfilestring.Trim();
+                var tempfolder = $@"C:\_DND\_TEMP\{subpath}\";
+                Directory.CreateDirectory(tempfolder);
+                //var tempname = $"{tempfolder}{Path.DirectorySeparatorChar}{Path.GetFileNameWithoutExtension(files[i])} {ext}";
+                //var tempfile = files[i];
+                var filecount = Directory.EnumerateFiles(tempfolder, "*", SearchOption.TopDirectoryOnly).Count().ToString("0000");
+                var thetempfilename = $"{tempfolder}{subpathfilestring} {filecount}{Path.GetExtension(files[i])}";
+                File.Copy(files[i], thetempfilename);
+                //File.Move("", "");
+            }
+        }
+
+        private void uiDedupeImages_Click(object sender, RoutedEventArgs e)
+        {
+            if(MessageBox.Show("Are you sure you want to continue?", "Continue?", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.No) { return; }
+
+            InitializeElapsedTimer();
+            LaunchDedupeTask();
+        }
+
+        private async void LaunchDedupeTask()
+        {
+            Task<int> task = RunDedupeTask();
+            //[[ANYTHING YOU WANT TO DO BEFORE TASK STARTS]]
+            InitDirectories();
+            StartTimer();
+            await task;
+            Finished();
+        }
+
+        public async Task<int> RunDedupeTask()
+        {
+            await Task.Run(() =>
+            {
+                DoDedupe();
+            });
+            return 0;
+        }
+
+        public void DoDedupe()
+        {
+            foreach (var pattern in SearchPattern.Split(','))
+            {
+                var filetype = pattern;
+                if (!pattern.StartsWith("*.")) { filetype = $"*.{pattern}"; }
+
+                GetFileObjects(filetype, CheckDimensions);
+                RenameFileObjects();
+                CompareByImageProperties();
+                RebuildFileObjects();
+            }
+        }
+
+        private void uiGifPattern_Click(object sender, RoutedEventArgs e)
+        {
+            SearchPattern = gifPattern;
+            uiSearchPattern.IsReadOnly = true;
+        }
+
+        private void uiImgPattern_Click(object sender, RoutedEventArgs e)
+        {
+            SearchPattern = imagePattern;
+            uiSearchPattern.IsReadOnly = true;
+        }
+
+        private void uiDocPattern_Click(object sender, RoutedEventArgs e)
+        {
+            SearchPattern = docPattern;
+            uiSearchPattern.IsReadOnly = true;
+        }
+
+        private void uiMoviePattern_Click(object sender, RoutedEventArgs e)
+        {
+            SearchPattern = moviePattern;
+            uiSearchPattern.IsReadOnly = true;
+        }
+
+        private void uiCustomPattern_Click(object sender, RoutedEventArgs e)
+        {
+            SearchPattern = "";
+            uiSearchPattern.IsReadOnly = false;
+        }
+
+        private void _asyncElapsedTimer_Tick(object sender, EventArgs e)
+        {
+            var timeSpan = DateTime.Now.Subtract(_startTime);
+            InfoText = $"{InfoText.TrimEnd(Environment.NewLine.ToCharArray())}{Environment.NewLine}{_asyncDialogFeedback}";
+            _asyncDialogFeedback = "";
+        }
+
+        private void StartTimer()
+        {
+            _startTime = DateTime.Now;
+            _asyncElapsedTimer.Start();
+        }
+
+        private void Finished()
+        {
+            _asyncElapsedTimer.Stop();
+            //[[UPDATE UI WHEN WHATEVER IS DONE]]
+        }
+
+        private void Window_Closing(object sender, CancelEventArgs e)
+        {
+            Finished();
+        }
+
+        private void Window_Closed(object sender, EventArgs e)
+        {
+            Finished();
+        }
+    }
+}
